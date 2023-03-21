@@ -215,7 +215,6 @@ struct Args {
 }
 
 async fn do_backup(verbose: bool, world: &World) -> Result<(), Error> {
-    //TODO save-off, save-all
     let world_size = dir_size(world.dir()).await?;
     if make_room(world_size, verbose, world).await? {
         make_backup(world).await?;
