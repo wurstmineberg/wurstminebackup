@@ -168,15 +168,18 @@ async fn make_room(amount: ByteSize, verbose: bool, world: &World) -> Result<boo
     loop {
         let fs = dir.ancestors().map(|ancestor| System::new().mount_at(ancestor)).find_map(Result::ok).ok_or(Error::NoMount)?;
         if fs.avail < amount {
-            let mut entries = pin!(fs::read_dir(&dir));
+            let mut entries = pin!(fs::read_dir(dir));
             let mut smallest_uncompressed = None;
             while let Some(entry) = entries.try_next().await? {
                 let path = entry.path();
-                if path.extension().and_then(|ext| ext.to_str()) != Some("gz") {
-                    // this works because the backups are regular files, not directories
-                    let size = ByteSize::b(entry.metadata().await.at(entry.path())?.len()); //TODO wheel
-                    if smallest_uncompressed.as_ref().map_or(true, |&(_, smallest_size)| size < smallest_size) {
-                        smallest_uncompressed = Some((path, size));
+                let mut entries = pin!(fs::read_dir(path));
+                while let Some(entry) = entries.try_next().await? {
+                    let path = entry.path();
+                    if entry.file_type().await.at(&path)?.is_dir() {
+                        let size = dir_size(&path).await?;
+                        if smallest_uncompressed.as_ref().map_or(true, |&(_, smallest_size)| size < smallest_size) {
+                            smallest_uncompressed = Some((path, size));
+                        }
                     }
                 }
             }
