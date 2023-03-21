@@ -152,7 +152,7 @@ async fn make_backup(world: &World) -> Result<(), Error> {
     let (_, version) = jar_path.file_stem().ok_or(Error::JarPath)?.to_str().ok_or(Error::Utf8)?.split_once('.').ok_or(Error::JarPath)?; //TODO wheel
     fs_extra::dir::copy(
         world.dir().join("world"),
-        Path::new(BACKUP_PATH).join(world.dir()).join(format!("{}_{}", Utc::now().format(TIMESTAMP_FORMAT), version)),
+        Path::new(BACKUP_PATH).join(world.to_string()).join(format!("{}_{}", Utc::now().format(TIMESTAMP_FORMAT), version)),
         &fs_extra::dir::CopyOptions::default(),
     )?; //TODO async
     Ok(())
