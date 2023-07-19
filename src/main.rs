@@ -148,13 +148,62 @@ async fn delete_one(verbose: bool, world: &World) -> Result<bool, Error> {
 async fn make_backup(verbose: bool, world: &World) -> Result<(), Error> {
     let jar_path = world.dir().join("minecraft_server.jar");
     let jar_path = fs::read_link(&jar_path).await?;
+    let now = Utc::now();
     let (_, version) = jar_path.file_stem().ok_or(Error::JarPath)?.to_str().ok_or(Error::Utf8)?.split_once('.').ok_or(Error::JarPath)?;
-    Command::new("tar")
-        .arg(if verbose { "-cvzf" } else { "-czf" })
-        .arg(Path::new(BACKUP_PATH).join(world.to_string()).join(format!("{}_{}.tar.gz", Utc::now().format(TIMESTAMP_FORMAT), version)))
-        .arg("world")
-        .current_dir(world.dir())
-        .check("tar").await?;
+    if verbose {
+        println!("backing up {world} world");
+    }
+    loop {
+        let output = Command::new("rsync")
+            .arg("--delete")
+            .arg("--archive")
+            .arg("--itemize-changes")
+            .arg(world.dir().join("world"))
+            .arg(Path::new(BACKUP_PATH).join(world.to_string()).join(format!("{}_{}.tar.gz", now.format(TIMESTAMP_FORMAT), version)))
+            .check("rsync").await?;
+        if output.stdout.is_empty() { break }
+    }
+    Ok(())
+}
+
+async fn compress_all(verbose: bool, world: &World) -> Result<(), Error> {
+    let dir = Path::new(BACKUP_PATH);
+
+    'outer: loop {
+        let mut entries = pin!(fs::read_dir(dir));
+        let mut smallest_uncompressed = None;
+        while let Some(entry) = entries.try_next().await? {
+            let path = entry.path();
+            let mut entries = pin!(fs::read_dir(path));
+            while let Some(entry) = entries.try_next().await? {
+                let path = entry.path();
+                if entry.file_type().await.at(&path)?.is_dir() {
+                    let size = dir_size(&path).await?;
+                    if smallest_uncompressed.as_ref().map_or(true, |&(_, smallest_size)| size < smallest_size) {
+                        smallest_uncompressed = Some((path, size));
+                    }
+                }
+            }
+        }
+        let Some((path, size)) = smallest_uncompressed else { break };
+        let Some(filename) = path.file_name() else { panic!("backup at root") };
+        let parent = path.parent().unwrap();
+        while size < dir.ancestors().map(|ancestor| System::new().mount_at(ancestor)).find_map(Result::ok).ok_or(Error::NoMount)?.avail {
+            // not enough room to compress anything, delete backups to make room
+            if !delete_one(verbose, world).await? { return Err(Error::DiskSpace) }
+            if !fs::exists(&path).await? { continue 'outer }
+        }
+        if verbose {
+            println!("compressing {}", filename.to_string_lossy());
+        }
+        Command::new("tar")
+            .arg(if verbose { "-cvzf" } else { "-czf" })
+            .arg(format!("{}.tar.gz", filename.to_str().ok_or(Error::Utf8)?))
+            .arg(filename)
+            .current_dir(parent)
+            .check("tar").await?;
+        fs::remove_dir_all(path).await?;
+    }
     Ok(())
 }
 
@@ -184,6 +233,7 @@ async fn do_backup(verbose: bool, world: &World) -> Result<(), Error> {
     let world_size = dir_size(world.dir()).await?;
     if make_room(world_size, verbose, world).await? {
         make_backup(verbose, world).await?;
+        compress_all(verbose, world).await?;
         Ok(())
     } else {
         Err(Error::DiskSpace)
