@@ -44,7 +44,6 @@ const TIMESTAMP_FORMAT: &str = "%Y-%m-%d_%H-%M-%S";
 #[derive(Debug, thiserror::Error)]
 enum Error {
     #[error(transparent)] ChronoParse(#[from] chrono::format::ParseError),
-    #[error(transparent)] FsExtra(#[from] fs_extra::error::Error),
     #[error(transparent)] Minecraft(#[from] systemd_minecraft::Error),
     #[error(transparent)] Wheel(#[from] wheel::Error),
     #[error("not enough room to create a backup")]
@@ -73,7 +72,7 @@ fn dir_size(path: impl AsRef<Path>) -> Pin<Box<dyn Future<Output = wheel::Result
     Box::pin(async {
         // Using `fs::symlink_metadata` since we don't want to follow symlinks,
         // as we're calculating the exact size of the requested path itself.
-        let path_metadata = tokio::fs::symlink_metadata(&path).await.at(&path)?; //TODO wheel
+        let path_metadata = fs::symlink_metadata(&path).await?;
 
         let mut size_in_bytes = ByteSize::default();
 
@@ -138,7 +137,7 @@ async fn delete_one(verbose: bool, world: &World) -> Result<bool, Error> {
         println!("deleting {filename}");
     }
     let path = dir.join(filename);
-    if tokio::fs::symlink_metadata(&path).await.at(&path)?.is_dir() { //TODO wheel
+    if fs::symlink_metadata(&path).await?.is_dir() {
         fs::remove_dir_all(path).await?;
     } else {
         fs::remove_file(path).await?;
@@ -146,15 +145,16 @@ async fn delete_one(verbose: bool, world: &World) -> Result<bool, Error> {
     Ok(true)
 }
 
-async fn make_backup(world: &World) -> Result<(), Error> {
+async fn make_backup(verbose: bool, world: &World) -> Result<(), Error> {
     let jar_path = world.dir().join("minecraft_server.jar");
-    let jar_path = tokio::fs::read_link(&jar_path).await.at(jar_path)?;
-    let (_, version) = jar_path.file_stem().ok_or(Error::JarPath)?.to_str().ok_or(Error::Utf8)?.split_once('.').ok_or(Error::JarPath)?; //TODO wheel
-    fs_extra::dir::copy(
-        world.dir().join("world"),
-        Path::new(BACKUP_PATH).join(world.to_string()).join(format!("{}_{}", Utc::now().format(TIMESTAMP_FORMAT), version)),
-        &fs_extra::dir::CopyOptions::default(),
-    )?; //TODO async
+    let jar_path = fs::read_link(&jar_path).await?;
+    let (_, version) = jar_path.file_stem().ok_or(Error::JarPath)?.to_str().ok_or(Error::Utf8)?.split_once('.').ok_or(Error::JarPath)?;
+    Command::new("tar")
+        .arg(if verbose { "-cvzf" } else { "-czf" })
+        .arg(Path::new(BACKUP_PATH).join(world.to_string()).join(format!("{}_{}.tar.gz", Utc::now().format(TIMESTAMP_FORMAT), version)))
+        .arg("world")
+        .current_dir(world.dir())
+        .check("tar").await?;
     Ok(())
 }
 
@@ -165,44 +165,10 @@ async fn make_backup(world: &World) -> Result<(), Error> {
 /// * an error occurs (returns `Err(_)`).
 async fn make_room(amount: ByteSize, verbose: bool, world: &World) -> Result<bool, Error> {
     let dir = Path::new(BACKUP_PATH);
-    loop {
-        let fs = dir.ancestors().map(|ancestor| System::new().mount_at(ancestor)).find_map(Result::ok).ok_or(Error::NoMount)?;
-        if fs.avail < amount {
-            let mut entries = pin!(fs::read_dir(dir));
-            let mut smallest_uncompressed = None;
-            while let Some(entry) = entries.try_next().await? {
-                let path = entry.path();
-                let mut entries = pin!(fs::read_dir(path));
-                while let Some(entry) = entries.try_next().await? {
-                    let path = entry.path();
-                    if entry.file_type().await.at(&path)?.is_dir() {
-                        let size = dir_size(&path).await?;
-                        if smallest_uncompressed.as_ref().map_or(true, |&(_, smallest_size)| size < smallest_size) {
-                            smallest_uncompressed = Some((path, size));
-                        }
-                    }
-                }
-            }
-            if let Some((path, size)) = smallest_uncompressed {
-                let Some(filename) = path.file_name() else { panic!("backup at root") };
-                let parent = path.parent().unwrap();
-                if size < fs.avail {
-                    Command::new("tar")
-                        .arg("-czf")
-                        .arg(format!("{}.tar.gz", filename.to_str().ok_or(Error::Utf8)?))
-                        .arg(filename)
-                        .current_dir(parent)
-                        .check("tar").await?;
-                    fs::remove_dir_all(path).await?;
-                    continue
-                }
-            }
-            // not enough room to compress anything or no uncompressed backups left, delete backups to make room
-            if !delete_one(verbose, world).await? { return Ok(false) }
-        } else {
-            return Ok(true)
-        }
+    while dir.ancestors().map(|ancestor| System::new().mount_at(ancestor)).find_map(Result::ok).ok_or(Error::NoMount)?.avail < amount {
+        if !delete_one(verbose, world).await? { return Ok(false) }
     }
+    Ok(true)
 }
 
 #[derive(clap::Parser)]
@@ -217,7 +183,7 @@ struct Args {
 async fn do_backup(verbose: bool, world: &World) -> Result<(), Error> {
     let world_size = dir_size(world.dir()).await?;
     if make_room(world_size, verbose, world).await? {
-        make_backup(world).await?;
+        make_backup(verbose, world).await?;
         Ok(())
     } else {
         Err(Error::DiskSpace)
