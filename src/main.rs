@@ -188,7 +188,7 @@ async fn compress_all(verbose: bool, world: &World) -> Result<(), Error> {
         let Some((path, size)) = smallest_uncompressed else { break };
         let Some(filename) = path.file_name() else { panic!("backup at root") };
         let parent = path.parent().unwrap();
-        while size < dir.ancestors().map(|ancestor| System::new().mount_at(ancestor)).find_map(Result::ok).ok_or(Error::NoMount)?.avail {
+        while dir.ancestors().map(|ancestor| System::new().mount_at(ancestor)).find_map(Result::ok).ok_or(Error::NoMount)?.avail < size {
             // not enough room to compress anything, delete backups to make room
             if !delete_one(verbose, world).await? { return Err(Error::DiskSpace) }
             if !fs::exists(&path).await? { continue 'outer }
