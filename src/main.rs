@@ -159,7 +159,7 @@ async fn make_backup(verbose: bool, world: &World) -> Result<(), Error> {
             .arg("--archive")
             .arg("--itemize-changes")
             .arg(world.dir().join("world"))
-            .arg(Path::new(BACKUP_PATH).join(world.to_string()).join(format!("{}_{}.tar.gz", now.format(TIMESTAMP_FORMAT), version)))
+            .arg(Path::new(BACKUP_PATH).join(world.to_string()).join(format!("{}_{}", now.format(TIMESTAMP_FORMAT), version)))
             .check("rsync").await?;
         if output.stdout.is_empty() { break }
     }
