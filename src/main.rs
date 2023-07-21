@@ -158,7 +158,7 @@ async fn make_backup(verbose: bool, world: &World) -> Result<(), Error> {
             .arg("--delete")
             .arg("--archive")
             .arg("--itemize-changes")
-            .arg(world.dir().join("world"))
+            .arg(world.dir())
             .arg(Path::new(BACKUP_PATH).join(world.to_string()).join(format!("{}_{}", now.format(TIMESTAMP_FORMAT), version)))
             .check("rsync").await?;
         if output.stdout.is_empty() { break }
