@@ -243,10 +243,17 @@ async fn do_backup(verbose: bool, world: &World) -> Result<(), Error> {
 #[wheel::main(debug)]
 async fn main(Args { verbose, world }: Args) -> Result<(), Error> {
     let world = World::new(world);
-    world.command("save-off").await?;
-    world.command("save-all").await?;
-    sleep(Duration::from_secs(10)).await;
+    let was_running = world.is_running().await?;
+    if was_running {
+        world.command("save-off").await?;
+        world.command("save-all").await?;
+        sleep(Duration::from_secs(10)).await;
+    }
     let res = do_backup(verbose, &world).await;
-    let save_on_res = world.command("save-on").await.map(|_| ()).map_err(Error::from); // reenable saves even if backup failed
-    res.and(save_on_res)
+    if was_running {
+        let save_on_res = world.command("save-on").await.map(|_| ()).map_err(Error::from); // reenable saves even if backup failed
+        res.and(save_on_res)
+    } else {
+        res
+    }
 }
