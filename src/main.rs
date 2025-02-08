@@ -1,5 +1,5 @@
-#![deny(rust_2018_idioms, unused, unused_crate_dependencies, unused_import_braces, unused_lifetimes, unused_qualifications, warnings)]
-#![forbid(unsafe_code)]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use {
     std::{
@@ -112,7 +112,7 @@ async fn delete_one(verbose: bool, world: &World) -> Result<bool, Error> {
         if let Ok(mut version_parts) = version.split('.').map(|part| part.parse::<i64>()).try_collect::<_, Vec<_>, _>() {
             version_parts.resize(3, 0);
             let [major, minor, patch] = <[_; 3]>::try_from(version_parts).unwrap();
-            timestamps.insert((major, minor, patch, Utc.datetime_from_str(timestamp, TIMESTAMP_FORMAT)?), filename);
+            timestamps.insert((major, minor, patch, NaiveDateTime::parse_from_str(timestamp, TIMESTAMP_FORMAT)?.and_utc()), filename);
         } else {
             return Err(Error::FilenameFormat)
         }
