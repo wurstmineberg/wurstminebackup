@@ -19,6 +19,8 @@ unused_qualifications = "deny"
 warnings = "deny"
 
 [dependencies]
+astral-tokio-tar = "0.6"
+async-compression = { version = "0.4", features = ["gzip", "tokio"] }
 bytesize = "1" # transitive dependency of systemstat
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
@@ -29,5 +31,5 @@ mimalloc = "0.1"
 systemd_minecraft = { git = "https://github.com/wurstmineberg/systemd-minecraft", branch = "riir" }
 systemstat = "0.2"
 thiserror = "2"
-tokio = { version = "1", features = ["fs", "process", "time"] }
+tokio = { version = "1", features = ["io-util", "fs", "process", "time"] }
 wheel = { git = "https://github.com/fenhl/wheel" }

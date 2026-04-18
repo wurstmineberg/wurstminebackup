@@ -12,6 +12,7 @@ use {
         },
         time::Duration,
     },
+    async_compression::tokio::write::GzipEncoder,
     bytesize::ByteSize,
     chrono::prelude::*,
     futures::{
@@ -26,11 +27,15 @@ use {
         System,
     },
     tokio::{
+        io::AsyncWriteExt as _,
         process::Command,
         time::sleep,
     },
     wheel::{
-        fs,
+        fs::{
+            self,
+            File,
+        },
         traits::{
             AsyncCommandOutputExt as _,
             IoResultExt as _,
@@ -196,12 +201,12 @@ async fn compress_all(verbose: bool, world: &World) -> Result<(), Error> {
         if verbose {
             println!("compressing {}", filename.to_string_lossy());
         }
-        Command::new("tar")
-            .arg(if verbose { "-cvzf" } else { "-czf" })
-            .arg(format!("{}.tar.gz", filename.to_str().ok_or(Error::Utf8)?))
-            .arg(filename)
-            .current_dir(parent)
-            .check("tar").await?;
+        let mut tar_filename = filename.to_owned();
+        tar_filename.push(".tar.gz");
+        let tar_path = parent.join(tar_filename);
+        let mut builder = tokio_tar::Builder::new(GzipEncoder::new(File::create(&tar_path).await?));
+        builder.append_dir_all(&path, &path).await.at2(&path, &tar_path)?;
+        builder.into_inner().await.at(&tar_path)?.shutdown().await.at(tar_path)?;
         fs::remove_dir_all(path).await?;
     }
     Ok(())
