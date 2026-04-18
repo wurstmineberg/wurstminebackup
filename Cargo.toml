@@ -19,15 +19,15 @@ unused_qualifications = "deny"
 warnings = "deny"
 
 [dependencies]
-bytesize = "1.2.0"
-chrono = { version = "0.4.24", default-features = false, features = ["clock", "std"] }
-clap = { version = "4.1.11", features = ["derive"] }
-futures = "0.3.27"
+bytesize = "1" # transitive dependency of systemstat
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive"] }
+futures = "0.3"
 itertools = "0.14"
 lazy-regex = "3"
-mimalloc = "0.1.43"
-minecraft = { git = "https://github.com/wurstmineberg/systemd-minecraft", branch = "riir", version = "6.1.3" }
-systemstat = "0.2.3"
+mimalloc = "0.1"
+systemd_minecraft = { git = "https://github.com/wurstmineberg/systemd-minecraft", branch = "riir" }
+systemstat = "0.2"
 thiserror = "2"
-tokio = { version = "1.26.0", features = ["fs", "process", "time"] }
-wheel = { git = "https://github.com/fenhl/wheel", branch = "main" }
+tokio = { version = "1", features = ["fs", "process", "time"] }
+wheel = { git = "https://github.com/fenhl/wheel" }
