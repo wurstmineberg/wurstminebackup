@@ -174,6 +174,7 @@ async fn make_backup(verbose: bool, world: &World) -> Result<(), MakeBackupError
 #[derive(Debug, thiserror::Error)]
 enum CompressAllError {
     #[error(transparent)] DeleteOne(#[from] DeleteOneError),
+    #[error(transparent)] StripPrefix(#[from] std::path::StripPrefixError),
     #[error(transparent)] Wheel(#[from] wheel::Error),
     #[error("not enough room to create a backup")]
     DiskSpace,
@@ -215,7 +216,7 @@ async fn compress_all(verbose: bool, world: &World) -> Result<(), CompressAllErr
         tar_filename.push(".tar.gz");
         let tar_path = parent.join(tar_filename);
         let mut builder = tokio_tar::Builder::new(GzipEncoder::new(File::create(&tar_path).await?));
-        builder.append_dir_all(&path, &path).await.at2(&path, &tar_path)?;
+        builder.append_dir_all(path.strip_prefix(dir)?, &path).await.at2(&path, &tar_path)?;
         builder.into_inner().await.at(&tar_path)?.shutdown().await.at(tar_path)?;
         fs::remove_dir_all(path).await?;
     }
