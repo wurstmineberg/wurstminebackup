@@ -64,18 +64,18 @@ async fn main() -> Result<(), Error> {
         }
     }
 
-    println!("cargo deny");
-    Command::new("cargo").arg("+stable").arg("deny").arg("check").arg("advisories").arg("bans").check("cargo deny").await?;
-
-    println!("cargo check");
-    Command::new("cargo").arg("+stable").arg("check").spawn().at_command("cargo check")?.check("cargo check").await?;
-
     cfg_select! {
         windows => {
-            println!("nix build");
-            Command::new("wsl").arg("nix").arg("build").arg("--no-link").spawn().at_command("nix build")?.check("nix build").await?;
+            println!("cargo deny");
+            Command::new("cargo").arg("+stable").arg("deny").arg("check").arg("advisories").arg("bans").check("cargo deny").await?;
+
+            println!("cargo check");
+            Command::new("cargo").arg("+stable").arg("check").spawn().at_command("cargo check")?.check("cargo check").await?;
         }
         _ => {
+            println!("cargo deny");
+            Command::new("cargo").arg("deny").arg("check").arg("advisories").arg("bans").check("cargo deny").await?;
+
             println!("nix build");
             Command::new("nix").arg("build").arg("--no-link").spawn().at_command("nix build")?.check("nix build").await?;
         }

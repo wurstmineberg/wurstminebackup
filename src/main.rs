@@ -46,31 +46,6 @@ use {
 const BACKUP_PATH: &str = "/media/backup/world";
 const TIMESTAMP_FORMAT: &str = "%Y-%m-%d_%H-%M-%S";
 
-#[derive(Debug, thiserror::Error)]
-enum Error {
-    #[error(transparent)] ChronoParse(#[from] chrono::format::ParseError),
-    #[error(transparent)] Minecraft(#[from] systemd_minecraft::Error),
-    #[error(transparent)] Wheel(#[from] wheel::Error),
-    #[error("not enough room to create a backup")]
-    DiskSpace,
-    #[error("found file in backup path not matching the filename format")]
-    FilenameFormat,
-    #[error("unexpected minecraft_server.jar filename format")]
-    JarPath,
-    #[error("failed to check file system stats at backup directory")]
-    NoMount,
-    #[error("non-UTF-8 filename")]
-    OsString(OsString),
-    #[error("non-UTF-8 filename")]
-    Utf8,
-}
-
-impl From<OsString> for Error {
-    fn from(value: OsString) -> Self {
-        Self::OsString(value)
-    }
-}
-
 //FROM https://docs.rs/fs_extra/1.3.0/src/fs_extra/dir.rs.html#786-816 modified to be async and use ByteSize
 fn dir_size(path: impl AsRef<Path>) -> Pin<Box<dyn Future<Output = wheel::Result<ByteSize>>>> {
     let path = path.as_ref().to_owned();
@@ -104,22 +79,38 @@ fn dir_size(path: impl AsRef<Path>) -> Pin<Box<dyn Future<Output = wheel::Result
     })
 }
 
+#[derive(Debug, thiserror::Error)]
+enum DeleteOneError {
+    #[error(transparent)] ChronoParse(#[from] chrono::format::ParseError),
+    #[error(transparent)] Wheel(#[from] wheel::Error),
+    #[error("found file in backup path not matching the filename format")]
+    FilenameFormat,
+    #[error("non-UTF-8 filename")]
+    OsString(OsString),
+}
+
+impl From<OsString> for DeleteOneError {
+    fn from(value: OsString) -> Self {
+        Self::OsString(value)
+    }
+}
+
 /// Deletes the backup that's closest to other backups. In case of a tie, the oldest backup is deleted.
 ///
 /// If only one backup exists, it's not deleted and `false` is returned.
-async fn delete_one(verbose: bool, world: &World) -> Result<bool, Error> {
+async fn delete_one(verbose: bool, world: &World) -> Result<bool, DeleteOneError> {
     let dir = Path::new(BACKUP_PATH).join(world.to_string());
     let mut timestamps = BTreeMap::default();
     let mut entries = pin!(fs::read_dir(&dir));
     while let Some(entry) = entries.try_next().await? {
         let filename = entry.file_name().into_string()?;
-        let (_, timestamp, version) = regex_captures!(r"^([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2})_(.+?)(?:\.tar\.gz)?$", &filename).ok_or(Error::FilenameFormat)?;
+        let (_, timestamp, version) = regex_captures!(r"^([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2})_(.+?)(?:\.tar\.gz)?$", &filename).ok_or(DeleteOneError::FilenameFormat)?;
         if let Ok(mut version_parts) = version.split('.').map(|part| part.parse::<i64>()).try_collect::<_, Vec<_>, _>() {
             version_parts.resize(3, 0);
             let [major, minor, patch] = <[_; 3]>::try_from(version_parts).unwrap();
             timestamps.insert((major, minor, patch, NaiveDateTime::parse_from_str(timestamp, TIMESTAMP_FORMAT)?.and_utc()), filename);
         } else {
-            return Err(Error::FilenameFormat)
+            return Err(DeleteOneError::FilenameFormat)
         }
     }
     let filename = match timestamps.len() {
@@ -150,11 +141,20 @@ async fn delete_one(verbose: bool, world: &World) -> Result<bool, Error> {
     Ok(true)
 }
 
-async fn make_backup(verbose: bool, world: &World) -> Result<(), Error> {
+#[derive(Debug, thiserror::Error)]
+enum MakeBackupError {
+    #[error(transparent)] Wheel(#[from] wheel::Error),
+    #[error("unexpected minecraft_server.jar filename format")]
+    JarPath,
+    #[error("non-UTF-8 filename")]
+    Utf8,
+}
+
+async fn make_backup(verbose: bool, world: &World) -> Result<(), MakeBackupError> {
     let jar_path = world.dir().join("minecraft_server.jar");
     let jar_path = fs::read_link(&jar_path).await?;
     let now = Utc::now();
-    let (_, version) = jar_path.file_stem().ok_or(Error::JarPath)?.to_str().ok_or(Error::Utf8)?.split_once('.').ok_or(Error::JarPath)?;
+    let (_, version) = jar_path.file_stem().ok_or(MakeBackupError::JarPath)?.to_str().ok_or(MakeBackupError::Utf8)?.split_once('.').ok_or(MakeBackupError::JarPath)?;
     if verbose {
         println!("backing up {world} world");
     }
@@ -171,7 +171,17 @@ async fn make_backup(verbose: bool, world: &World) -> Result<(), Error> {
     Ok(())
 }
 
-async fn compress_all(verbose: bool, world: &World) -> Result<(), Error> {
+#[derive(Debug, thiserror::Error)]
+enum CompressAllError {
+    #[error(transparent)] DeleteOne(#[from] DeleteOneError),
+    #[error(transparent)] Wheel(#[from] wheel::Error),
+    #[error("not enough room to create a backup")]
+    DiskSpace,
+    #[error("failed to check file system stats at backup directory")]
+    NoMount,
+}
+
+async fn compress_all(verbose: bool, world: &World) -> Result<(), CompressAllError> {
     let dir = Path::new(BACKUP_PATH);
 
     'outer: loop {
@@ -193,9 +203,9 @@ async fn compress_all(verbose: bool, world: &World) -> Result<(), Error> {
         let Some((path, size)) = smallest_uncompressed else { break };
         let Some(filename) = path.file_name() else { panic!("backup at root") };
         let parent = path.parent().unwrap();
-        while dir.ancestors().map(|ancestor| System::new().mount_at(ancestor)).find_map(Result::ok).ok_or(Error::NoMount)?.avail < size {
+        while dir.ancestors().map(|ancestor| System::new().mount_at(ancestor)).find_map(Result::ok).ok_or(CompressAllError::NoMount)?.avail < size {
             // not enough room to compress anything, delete backups to make room
-            if !delete_one(verbose, world).await? { return Err(Error::DiskSpace) }
+            if !delete_one(verbose, world).await? { return Err(CompressAllError::DiskSpace) }
             if !fs::exists(&path).await? { continue 'outer }
         }
         if verbose {
@@ -212,14 +222,21 @@ async fn compress_all(verbose: bool, world: &World) -> Result<(), Error> {
     Ok(())
 }
 
+#[derive(Debug, thiserror::Error)]
+enum MakeRoomError {
+    #[error(transparent)] DeleteOne(#[from] DeleteOneError),
+    #[error("failed to check file system stats at backup directory")]
+    NoMount,
+}
+
 /// Backups will be deleted until:
 ///
 /// * at least `amount` gibibytes are free _and_ at least `amount` % of the disk is free (returns `Ok(true)`),
 /// * only one backup file is remaining (returns `Ok(false)`), or
 /// * an error occurs (returns `Err(_)`).
-async fn make_room(amount: ByteSize, verbose: bool, world: &World) -> Result<bool, Error> {
+async fn make_room(amount: ByteSize, verbose: bool, world: &World) -> Result<bool, MakeRoomError> {
     let dir = Path::new(BACKUP_PATH);
-    while dir.ancestors().map(|ancestor| System::new().mount_at(ancestor)).find_map(Result::ok).ok_or(Error::NoMount)?.avail < amount {
+    while dir.ancestors().map(|ancestor| System::new().mount_at(ancestor)).find_map(Result::ok).ok_or(MakeRoomError::NoMount)?.avail < amount {
         if !delete_one(verbose, world).await? { return Ok(false) }
     }
     Ok(true)
@@ -234,19 +251,35 @@ struct Args {
     world: String,
 }
 
-async fn do_backup(verbose: bool, world: &World) -> Result<(), Error> {
+#[derive(Debug, thiserror::Error)]
+enum DoBackupError {
+    #[error(transparent)] CompressAll(#[from] CompressAllError),
+    #[error(transparent)] MakeBackup(#[from] MakeBackupError),
+    #[error(transparent)] MakeRoom(#[from] MakeRoomError),
+    #[error(transparent)] Wheel(#[from] wheel::Error),
+    #[error("not enough room to create a backup")]
+    DiskSpace,
+}
+
+async fn do_backup(verbose: bool, world: &World) -> Result<(), DoBackupError> {
     let world_size = dir_size(world.dir()).await?;
     if make_room(world_size, verbose, world).await? {
         make_backup(verbose, world).await?;
         compress_all(verbose, world).await?;
         Ok(())
     } else {
-        Err(Error::DiskSpace)
+        Err(DoBackupError::DiskSpace)
     }
 }
 
-#[wheel::main(debug)]
-async fn main(Args { verbose, world }: Args) -> Result<(), Error> {
+#[derive(Debug, thiserror::Error)]
+enum MainError {
+    #[error(transparent)] DoBackup(#[from] DoBackupError),
+    #[error(transparent)] Systemd(#[from] systemd_minecraft::Error),
+}
+
+#[wheel::main]
+async fn main(Args { verbose, world }: Args) -> Result<(), MainError> {
     let world = World::new(world);
     let was_running = world.is_running().await?;
     if was_running {
@@ -254,9 +287,9 @@ async fn main(Args { verbose, world }: Args) -> Result<(), Error> {
         world.command("save-all").await?;
         sleep(Duration::from_secs(10)).await;
     }
-    let res = do_backup(verbose, &world).await;
+    let res = do_backup(verbose, &world).await.map_err(MainError::from);
     if was_running {
-        let save_on_res = world.command("save-on").await.map(|_| ()).map_err(Error::from); // reenable saves even if backup failed
+        let save_on_res = world.command("save-on").await.map(|_| ()).map_err(MainError::from); // reenable saves even if backup failed
         res.and(save_on_res)
     } else {
         res
